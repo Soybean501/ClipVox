@@ -4,12 +4,12 @@
   "type": "module",
   "scripts": {
     "start": "node apps/server/index.js",
-    "start:deploy": "npm run build:client && node apps/server/index.js",
+    "install:web": "npm --prefix apps/web install",
+    "start:deploy": "npm run install:web && npm run build:client && node apps/server/index.js",
     "dev:server": "node apps/server/index.js",
     "dev:client": "npm --prefix apps/web run dev",
     "build:client": "npm --prefix apps/web run build",
-    "preview:client": "npm --prefix apps/web run preview",
-    "postinstall": "npm --prefix apps/web install"
+    "preview:client": "npm --prefix apps/web run preview"
   },
   "dependencies": {
     "express": "^4.19.0",
