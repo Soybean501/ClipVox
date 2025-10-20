@@ -23,9 +23,70 @@ const GOOGLE_TTS_ENDPOINT = "https://texttospeech.googleapis.com/v1beta1/text:sy
 const GOOGLE_TTS_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"];
 const RETRYABLE_TTS_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const MAX_TTS_ATTEMPTS = 3;
+const TTS_BYTE_LIMIT = 5000;
+const TTS_SAFE_BYTE_LIMIT = 4500;
 let googleAuthClientPromise;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function splitTextIntoChunks(text, byteLimit = TTS_SAFE_BYTE_LIMIT) {
+  const result = [];
+  const paragraphs = text.split(/\n{2,}/g);
+  let current = "";
+
+  const pushCurrent = () => {
+    if (current && current.trim().length) {
+      result.push(current.trim());
+      current = "";
+    }
+  };
+
+  for (const paragraph of paragraphs) {
+    const trimmedParagraph = paragraph.trim();
+    if (!trimmedParagraph) continue;
+
+    const candidate = current ? `${current}\n\n${trimmedParagraph}` : trimmedParagraph;
+    if (Buffer.byteLength(candidate, "utf8") <= byteLimit) {
+      current = candidate;
+      continue;
+    }
+
+    pushCurrent();
+
+    if (Buffer.byteLength(trimmedParagraph, "utf8") <= byteLimit) {
+      current = trimmedParagraph;
+      continue;
+    }
+
+    let sliceStart = 0;
+    const paragraphLength = trimmedParagraph.length;
+
+    while (sliceStart < paragraphLength) {
+      let sliceEnd = sliceStart;
+      while (
+        sliceEnd <= paragraphLength &&
+        Buffer.byteLength(trimmedParagraph.slice(sliceStart, sliceEnd), "utf8") <= byteLimit
+      ) {
+        sliceEnd += 1;
+      }
+
+      if (sliceEnd === sliceStart) {
+        sliceEnd = Math.min(sliceStart + byteLimit, paragraphLength);
+      } else {
+        sliceEnd -= 1;
+      }
+
+      const chunk = trimmedParagraph.slice(sliceStart, sliceEnd).trim();
+      if (chunk) {
+        result.push(chunk);
+      }
+      sliceStart = sliceEnd;
+    }
+  }
+
+  pushCurrent();
+  return result;
+}
 
 function parseGoogleCredentials(raw) {
   if (!raw) return null;
@@ -230,14 +291,16 @@ async function synthesizeSpeech({
   voiceName,
   modelName,
 }) {
-  const payload = {
+  const chunks = splitTextIntoChunks(text, TTS_SAFE_BYTE_LIMIT);
+  if (chunks.length === 0) {
+    throw new Error("No text provided for synthesis");
+  }
+
+  const basePayload = {
     audioConfig: {
       audioEncoding: audioEncoding || "LINEAR16",
       speakingRate: typeof speakingRate === "number" ? speakingRate : 1,
       pitch: typeof pitch === "number" ? pitch : 0,
-    },
-    input: {
-      text,
     },
     voice: {
       languageCode: languageCode || "en-US",
@@ -246,45 +309,63 @@ async function synthesizeSpeech({
   };
 
   if (modelName) {
-    payload.voice.modelName = modelName;
+    basePayload.voice.modelName = modelName;
   }
 
   const client = await getGoogleAuthClient();
   const authHeaders = await client.getRequestHeaders();
 
-  let lastErrorText = "";
+  const segments = [];
 
-  for (let attempt = 1; attempt <= MAX_TTS_ATTEMPTS; attempt += 1) {
-    const response = await fetch(GOOGLE_TTS_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders,
-      },
-      body: JSON.stringify(payload),
-    });
+  for (let i = 0; i < chunks.length; i += 1) {
+    const chunkText = chunks[i];
+    let lastErrorText = "";
 
-    if (response.ok) {
-      const data = await response.json();
-      if (!data.audioContent) {
-        throw new Error("Google TTS response missing audioContent");
+    for (let attempt = 1; attempt <= MAX_TTS_ATTEMPTS; attempt += 1) {
+      const response = await fetch(GOOGLE_TTS_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders,
+        },
+        body: JSON.stringify({
+          ...basePayload,
+          input: {
+            text: chunkText,
+          },
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (!data.audioContent) {
+          throw new Error("Google TTS response missing audioContent");
+        }
+        segments.push({
+          index: i,
+          text: chunkText,
+          audioContent: data.audioContent,
+        });
+        break;
       }
-      return {
-        audioContent: data.audioContent,
-        requestPayload: payload,
-      };
-    }
 
-    lastErrorText = await response.text();
-    if (!RETRYABLE_TTS_STATUS.has(response.status) || attempt === MAX_TTS_ATTEMPTS) {
-      throw new Error(`Google TTS failed (${response.status}): ${lastErrorText}`);
-    }
+      lastErrorText = await response.text();
+      if (!RETRYABLE_TTS_STATUS.has(response.status) || attempt === MAX_TTS_ATTEMPTS) {
+        throw new Error(`Google TTS failed (${response.status}): ${lastErrorText}`);
+      }
 
-    const backoff = 500 * attempt;
-    await sleep(backoff);
+      const backoff = 500 * attempt;
+      await sleep(backoff);
+    }
   }
 
-  throw new Error(`Google TTS failed: ${lastErrorText || "Unknown error"}`);
+  return {
+    segments,
+    totalSegments: segments.length,
+    audioEncoding: basePayload.audioConfig.audioEncoding,
+    voice: basePayload.voice,
+    exceededLimit: Buffer.byteLength(text, "utf8") > TTS_BYTE_LIMIT,
+  };
 }
 
 app.post("/generate", async (req, res) => {
@@ -334,7 +415,7 @@ app.post("/voice", async (req, res) => {
       return res.status(400).json({ error: "Missing text for synthesis" });
     }
 
-    const { audioContent } = await synthesizeSpeech({
+    const synthesis = await synthesizeSpeech({
       text: String(text),
       audioEncoding,
       speakingRate: Number(speakingRate),
@@ -344,7 +425,12 @@ app.post("/voice", async (req, res) => {
       modelName,
     });
 
-    res.json({ audioContent });
+    res.json({
+      segments: synthesis.segments,
+      audioEncoding: synthesis.audioEncoding,
+      voice: synthesis.voice,
+      exceededLimit: synthesis.exceededLimit,
+    });
   } catch (err) {
     console.error("Voice synthesis failed:", err);
     const message = err instanceof Error ? err.message : "Voice synthesis failed";

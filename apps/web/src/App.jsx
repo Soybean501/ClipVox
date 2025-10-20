@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { motion } from "framer-motion";
 import { AudioLines, Bot, Loader2, MountainSnow, Sparkles, Wand2 } from "lucide-react";
@@ -264,10 +264,12 @@ function StudioPage() {
   const [mode, setMode] = useState("oneshot");
   const [script, setScript] = useState("");
   const [scriptMeta, setScriptMeta] = useState(null);
-  const [audioSrc, setAudioSrc] = useState("");
+  const [audioSegments, setAudioSegments] = useState([]);
+  const [activeSegment, setActiveSegment] = useState(0);
   const [loadingScript, setLoadingScript] = useState(false);
   const [loadingVoice, setLoadingVoice] = useState(false);
   const [error, setError] = useState("");
+  const [voiceMessage, setVoiceMessage] = useState("");
   const [copied, setCopied] = useState(false);
 
   const chapterDuration = useMemo(() => {
@@ -279,8 +281,20 @@ function StudioPage() {
     return `${perChapter.toFixed(1)} min / chapter`;
   }, [form.length, form.chapters]);
 
+  useEffect(() => {
+    return () => {
+      audioSegments.forEach((segment) => URL.revokeObjectURL(segment.url));
+    };
+  }, [audioSegments]);
+
   const updateField = (name, value) => setForm((prev) => ({ ...prev, [name]: value }));
-  const resetVoicePlayer = () => setAudioSrc("");
+
+  const resetVoicePlayer = () => {
+    audioSegments.forEach((segment) => URL.revokeObjectURL(segment.url));
+    setAudioSegments([]);
+    setActiveSegment(0);
+    setVoiceMessage("");
+  };
 
   const handleGenerateScript = async (event) => {
     event.preventDefault();
@@ -337,6 +351,7 @@ function StudioPage() {
       setError("Generate a script first, then synthesize the voice.");
       return;
     }
+    resetVoicePlayer();
     setLoadingVoice(true);
     setError("");
     try {
@@ -355,7 +370,12 @@ function StudioPage() {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok || !data.audioContent) throw new Error(data.error || "Voice synthesis failed.");
+      if (!res.ok) throw new Error(data.error || "Voice synthesis failed.");
+
+      const segmentsData = Array.isArray(data.segments) ? data.segments : [];
+      if (segmentsData.length === 0) {
+        throw new Error("Voice synthesis failed: no audio returned.");
+      }
 
       const mime =
         payload.audioEncoding === "MP3"
@@ -363,10 +383,28 @@ function StudioPage() {
           : payload.audioEncoding === "OGG_OPUS"
           ? "audio/ogg"
           : "audio/wav";
-      const audioBytes = Uint8Array.from(atob(data.audioContent), (c) => c.charCodeAt(0));
-      const blob = new Blob([audioBytes.buffer], { type: mime });
-      const url = URL.createObjectURL(blob);
-      setAudioSrc(url);
+
+      const newSegments = segmentsData.map((segment, idx) => {
+        const audioBytes = Uint8Array.from(atob(segment.audioContent), (c) => c.charCodeAt(0));
+        const blob = new Blob([audioBytes.buffer], { type: mime });
+        return {
+          index: idx,
+          text: segment.text,
+          url: URL.createObjectURL(blob),
+        };
+      });
+
+      setAudioSegments(newSegments);
+      setActiveSegment(0);
+      if (data.exceededLimit) {
+        setVoiceMessage(
+          `Script exceeded the single-request limit. Audio was split into ${newSegments.length} segments.`
+        );
+      } else if (newSegments.length > 1) {
+        setVoiceMessage(`Audio delivered in ${newSegments.length} segments. Play or download each in order.`);
+      } else {
+        setVoiceMessage("");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error synthesizing voice.");
     } finally {
@@ -637,11 +675,66 @@ function StudioPage() {
               {loadingVoice ? "Rendering Voice" : "Generate Voice"}
             </button>
 
-            {audioSrc && (
+            {audioSegments.length > 0 && (
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-[0.35em] text-white/50">Preview</p>
-                <audio src={audioSrc} controls className="mt-3 w-full" />
-                <p className="mt-2 text-xs text-white/45">Download from the player or adjust settings and re-render.</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.35em] text-white/50">
+                    Preview segment {activeSegment + 1} / {audioSegments.length}
+                  </p>
+                  <span className="text-[10px] uppercase tracking-[0.35em] text-white/30">
+                    {form.audioEncoding}
+                  </span>
+                </div>
+                <audio
+                  key={audioSegments[activeSegment]?.url}
+                  src={audioSegments[activeSegment]?.url}
+                  controls
+                  className="mt-3 w-full"
+                />
+                {voiceMessage && <p className="mt-3 text-xs text-accent-cyan/90">{voiceMessage}</p>}
+                {audioSegments.length > 1 && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-[10px] uppercase tracking-[0.35em] text-white/45">Segments</p>
+                    <div className="flex flex-col gap-2">
+                      {audioSegments.map((segment, idx) => {
+                        const label = segment.text.replace(/\s+/g, " ").slice(0, 80);
+                        return (
+                          <div
+                            key={segment.url}
+                            className={`flex items-center justify-between rounded-xl border px-3 py-2 text-xs ${
+                              idx === activeSegment
+                                ? "border-accent-cyan/60 bg-accent-cyan/10 text-white"
+                                : "border-white/10 bg-white/0 text-white/70"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveSegment(idx);
+                              }}
+                              className="flex-1 text-left"
+                            >
+                              Segment {idx + 1}: {label}
+                              {segment.text.length > 80 ? "…" : ""}
+                            </button>
+                            <a
+                              href={segment.url}
+                              download={`clipvox-segment-${idx + 1}.${form.audioEncoding === "MP3" ? "mp3" : form.audioEncoding === "OGG_OPUS" ? "ogg" : "wav"}`}
+                              className="ml-3 rounded-full border border-white/15 px-3 py-1 text-[10px] uppercase tracking-[0.35em] text-white/60 hover:border-white/35 hover:text-white"
+                            >
+                              Save
+                            </a>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {audioSegments.length === 1 && (
+                  <p className="mt-2 text-xs text-white/45">
+                    Download from the player or adjust settings and re-render.
+                  </p>
+                )}
               </div>
             )}
           </div>
