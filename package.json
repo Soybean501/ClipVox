@@ -8,7 +8,8 @@
     "dev:server": "node apps/server/index.js",
     "dev:client": "npm --prefix apps/web run dev",
     "build:client": "npm --prefix apps/web run build",
-    "preview:client": "npm --prefix apps/web run preview"
+    "preview:client": "npm --prefix apps/web run preview",
+    "postinstall": "npm --prefix apps/web install"
   },
   "dependencies": {
     "express": "^4.19.0",
