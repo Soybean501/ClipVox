@@ -444,6 +444,15 @@ app.post("/voice", async (req, res) => {
   }
 });
 
+app.get("/healthz", (req, res) => {
+  res.json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    version: "1.0.0",
+  });
+});
+
 app.get("*", (req, res, next) => {
   if (req.method !== "GET") return next();
   if (req.path.startsWith("/generate") || req.path.startsWith("/voice")) return next();
