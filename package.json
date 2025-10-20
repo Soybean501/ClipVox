@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node apps/server/index.js",
+    "start:deploy": "npm run build:client && node apps/server/index.js",
     "dev:server": "node apps/server/index.js",
     "dev:client": "npm --prefix apps/web run dev",
     "build:client": "npm --prefix apps/web run build",

@@ -13,7 +13,15 @@ const __dirname = path.dirname(__filename);
 const CLIENT_DIST = path.resolve(__dirname, "../web/dist");
 
 const app = express();
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openAIApiKey = process.env.OPENAI_API_KEY;
+if (!openAIApiKey) {
+  console.error(
+    "Missing OPENAI_API_KEY. Set it via environment variables before starting the server."
+  );
+  process.exit(1);
+}
+
+const client = new OpenAI({ apiKey: openAIApiKey });
 
 app.use(express.json());
 app.use(express.static(CLIENT_DIST));
