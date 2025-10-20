@@ -5,11 +5,13 @@
   "scripts": {
     "start": "node apps/server/index.js",
     "install:web": "npm --prefix apps/web install --include=dev",
-    "start:deploy": "npm run install:web && npm run build:client && node apps/server/index.js",
+    "prepare:deploy": "if [ ! -d apps/web/node_modules ]; then npm run install:web; fi && if [ ! -f apps/web/dist/index.html ]; then npm run build:client; fi",
+    "start:deploy": "npm run prepare:deploy && node apps/server/index.js",
     "dev:server": "node apps/server/index.js",
     "dev:client": "npm --prefix apps/web run dev",
     "build:client": "npm --prefix apps/web run build",
-    "preview:client": "npm --prefix apps/web run preview"
+    "preview:client": "npm --prefix apps/web run preview",
+    "build": "npm run install:web && npm run build:client"
   },
   "dependencies": {
     "express": "^4.19.0",
