@@ -1,0 +1,45 @@
+# Node & general
+node_modules/
+.DS_Store
+dist/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local env & credentials
+.env
+.env.*
+*.local
+*.secret
+*.key
+*.pem
+*.p12
+
+# Build outputs
+apps/web/dist/
+apps/web/.vite/
+.parcel-cache/
+.next/
+out/
+.nuxt/
+.cache/
+
+# Misc tooling
+.eslintcache
+coverage/
+tmp/
+temp/
+
+# OS files
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# Editor settings
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+
